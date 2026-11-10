@@ -14,20 +14,21 @@
         var timer = 0;
 
         function remember() {
-            if (!current) return;
+            if (!current || (pending && pending.card)) return;
             var root = search.render(true);
             root = root.nodeType === 1 ? root : root[0];
             var focused = root.querySelector('.focus');
-            current.index = 0;
+            var selectedIndex = 0;
             current.results.some(function (record, index) {
                 var element = record.result.render(true);
                 element = element.nodeType === 1 ? element : element[0];
-                if (focused && element.contains(focused)) { current.index = index; return true; }
+                if (focused && element.contains(focused)) { selectedIndex = index; return true; }
                 return false;
             });
-            current.sourceTitle = current.results[current.index].source.title;
-            pending = current;
-            var selected = current;
+            // Keep only return state, so closed result DOM and decoded posters can be released.
+            var selected = {parameters: current.parameters, base: current.base, query: current.query,
+                index: selectedIndex, sourceTitle: current.results[selectedIndex].source.title};
+            pending = selected;
             setTimeout(function () { if (pending === selected && !selected.card) pending = null; }, 0);
         }
 
@@ -55,7 +56,10 @@
         search.listener.follow('sources', function (event) {
             if (!enabled) return;
             // The header also calls Lampa's private open function directly.
-            if (!current) current = {parameters: {}, base: Lampa.Activity.active(), query: '', results: [], restore: null};
+            if (!current) {
+                pending = null;
+                current = {parameters: {}, base: Lampa.Activity.active(), query: '', results: [], restore: null};
+            }
             var session = current;
             session.sources = event.sources;
             event.sources.listener.follow('search', function (event) {

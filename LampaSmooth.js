@@ -1,7 +1,112 @@
-/* Lampa Smooth 0.2.0-beta.1 — reuse a navigation probe only within the same JS turn. */
+/* Lampa Smooth 0.3.0-beta.1 — navigation optimization and return to search results. */
 (function () {
     'use strict';
     if (window.LampaSmooth) return;
+
+    function createSearchReturn() {
+        var search = Lampa.Search;
+        if (!search || typeof search.open !== 'function' || !search.listener || !Lampa.Listener) return null;
+        var originalOpen = search.open;
+        var enabled = false;
+        var current = null;
+        var pending = null;
+        var restoring = null;
+        var timer = 0;
+
+        function remember() {
+            if (!current) return;
+            var root = search.render(true);
+            root = root.nodeType === 1 ? root : root[0];
+            var focused = root.querySelector('.focus');
+            current.index = 0;
+            current.results.some(function (record, index) {
+                var element = record.result.render(true);
+                element = element.nodeType === 1 ? element : element[0];
+                if (focused && element.contains(focused)) { current.index = index; return true; }
+                return false;
+            });
+            current.sourceTitle = current.results[current.index].source.title;
+            pending = current;
+            var selected = current;
+            setTimeout(function () { if (pending === selected && !selected.card) pending = null; }, 0);
+        }
+
+        function open(parameters) {
+            if (!enabled) return originalOpen.apply(search, arguments);
+            var restore = restoring;
+            restoring = null;
+            pending = null;
+            current = {parameters: parameters || {}, base: Lampa.Activity.active(), query: '', results: [], restore: restore};
+            var session = current;
+            var result = originalOpen.apply(search, arguments);
+            if (restore) {
+                restore.index = 0;
+                session.results.some(function (record, index) {
+                    if (record.source.title === restore.sourceTitle) { restore.index = index; return true; }
+                    return false;
+                });
+            }
+            if (restore && current === session && restore.index > 0 && session.results[restore.index]) {
+                session.sources.enable(session.results[restore.index].result);
+            }
+            return result;
+        }
+
+        search.listener.follow('sources', function (event) {
+            if (!enabled) return;
+            // The header also calls Lampa's private open function directly.
+            if (!current) current = {parameters: {}, base: Lampa.Activity.active(), query: '', results: [], restore: null};
+            var session = current;
+            session.sources = event.sources;
+            event.sources.listener.follow('search', function (event) {
+                session.query = event.query;
+                if (session.restore && event.query !== session.restore.query) session.restore = null;
+            });
+            event.sources.listener.follow('create', function (event) {
+                session.results.push({source: event.source, result: event.result});
+            });
+            event.sources.listener.follow('select', function () { if (enabled && current === session) remember(); });
+            event.sources.listener.follow('finded', function (event) {
+                if (!session.restore || !event.count || event.result !== session.results[session.restore.index].result) return;
+                session.restore = null;
+                requestAnimationFrame(function () {
+                    if (enabled && current === session && document.body.classList.contains('search--open')) event.result.toggle();
+                });
+            });
+        });
+        search.listener.follow('close', function () { current = null; });
+        Lampa.Listener.follow('activity', function (event) {
+            if (!enabled) return;
+            if (event.type === 'init' && event.component === 'full') {
+                if (!pending && current && document.body.classList.contains('search--open')) remember();
+                if (pending && !pending.card) pending.card = event.object;
+            }
+            if (!pending) return;
+            if (event.type === 'archive' && event.object === pending.base && pending.card) {
+                var saved = pending;
+                pending = null;
+                timer = setTimeout(function () {
+                    timer = 0;
+                    if (!enabled || Lampa.Activity.active() !== saved.base || document.body.classList.contains('search--open')) return;
+                    var parameters = {};
+                    Object.keys(saved.parameters).forEach(function (name) { parameters[name] = saved.parameters[name]; });
+                    parameters.input = saved.query;
+                    restoring = saved;
+                    open(parameters);
+                }, 0);
+            } else if (event.type === 'destroy' && (event.object === pending.base || event.object === pending.card)) pending = null;
+        });
+
+        return {
+            enable: function () { if (!enabled && search.open === originalOpen) { search.open = open; enabled = true; } },
+            disable: function () {
+                enabled = false;
+                if (search.open === open) search.open = originalOpen;
+                clearTimeout(timer);
+                current = pending = restoring = null;
+            }
+        };
+    }
 
     function start() {
         if (window.LampaSmooth) return;
@@ -21,6 +126,7 @@
         var observer = new MutationObserver(clear);
         var expiry = Promise.resolve();
         var options = ['straightOnly', 'straightOverlapThreshold', 'ignoreHiddenElement', 'rememberSource', 'navigableFilter'];
+        var searchReturn = createSearchReturn();
 
         function clear() {
             cached = null;
@@ -77,10 +183,12 @@
             navigation.move = move;
             navigation.navigate = navigate;
             enabled = true;
+            if (searchReturn) searchReturn.enable();
         }
 
         function disable() {
             clear();
+            if (searchReturn) searchReturn.disable();
             if (!enabled) return;
             if (navigation.canmove === canmove) navigation.canmove = originalCan;
             if (navigation.move === move) navigation.move = originalMove;
@@ -88,7 +196,7 @@
             enabled = false;
         }
 
-        window.LampaSmooth = {version: '0.2.0-beta.1', enable: enable, disable: disable};
+        window.LampaSmooth = {version: '0.3.0-beta.1', enable: enable, disable: disable};
         enable();
     }
 
